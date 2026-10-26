@@ -1,0 +1,12 @@
+streamlit==1.39.0
+pandas
+numpy
+nltk
+textblob
+vaderSentiment
+spacy
+wordcloud
+matplotlib
+plotly
+newspaper3k
+lxml_html_clean
