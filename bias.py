@@ -250,37 +250,68 @@ def _clause_for(entity: str, sentence: str) -> str:
     return sentence
 
 
+ENTITY_TYPES = {"PERSON", "ORG", "GPE", "NORP", "EVENT"}
+
+
 def _loaded_in_clause(clause: str) -> list:
+    """List of (word, category) for every loaded word inside a clause."""
     words = re.findall(r"[a-z]+(?:'[a-z]+)?", clause.lower())
     ind = find_indicators(words)
     if ind.empty:
         return []
     ind = ind[ind["Category"].isin(["Negative loaded", "Positive loaded"])]
-    return list(ind["Word"])
+    found = []
+    for row in ind.itertuples():
+        found.extend([(row.Word, row.Category)] * int(row.Count))
+    return found
+
+
+def _clause_score(clause: str, loaded: list) -> float:
+    """VADER score nudged by loaded words (VADER's dictionary misses many of them)."""
+    base = vader_scores(clause)["compound"]
+    pos = sum(1 for _, cat in loaded if cat == "Positive loaded")
+    neg = sum(1 for _, cat in loaded if cat == "Negative loaded")
+    return max(-1.0, min(1.0, base + 0.25 * (pos - neg)))
+
+
+def _merge_short_names(df: pd.DataFrame) -> pd.Series:
+    """Map 'Mehta' -> 'Rohan Mehta' when exactly one longer name ends with it."""
+    full = {n for n in df["Name"] if len(n.split()) > 1}
+    mapping = {}
+    for n in df["Name"].unique():
+        if len(n.split()) == 1:
+            matches = [f for f in full if f.split()[-1].lower() == n.lower()]
+            if len(matches) == 1:
+                mapping[n] = matches[0]
+    return df["Name"].replace(mapping)
 
 
 def entity_framing(entities_df: pd.DataFrame) -> pd.DataFrame:
     """
     How is each person/organisation portrayed? Scores only the CLAUSE where the
-    entity appears (more precise than whole-sentence scoring) and lists the
-    loaded words used near it.
+    entity appears, nudged by loaded words, and lists those words.
     """
     cols = ["Entity", "Type", "Mentions", "Avg Sentiment", "Portrayal", "Loaded words nearby"]
     if entities_df is None or entities_df.empty:
         return pd.DataFrame(columns=cols)
 
-    df = entities_df.drop_duplicates(subset=["Entity", "Sentence"]).copy()
+    df = entities_df[entities_df["Type"].isin(ENTITY_TYPES)]
+    df = df.drop_duplicates(subset=["Entity", "Sentence"]).copy()
+    if df.empty:
+        return pd.DataFrame(columns=cols)
+
     df["Name"] = df["Entity"].apply(_clean_entity)
+    df["Name"] = _merge_short_names(df)
     df["Clause"] = df.apply(lambda r: _clause_for(r["Entity"], r["Sentence"]), axis=1)
     df = df.drop_duplicates(subset=["Name", "Clause"])
-    df["Score"] = df["Clause"].apply(lambda c: vader_scores(c)["compound"])
     df["Loaded"] = df["Clause"].apply(_loaded_in_clause)
+    df["Score"] = df.apply(lambda r: _clause_score(r["Clause"], r["Loaded"]), axis=1)
 
     grouped = df.groupby("Name").agg(
         Type=("Type", lambda x: x.mode().iat[0]),
         Mentions=("Clause", "count"),
         Avg=("Score", "mean"),
-        Loaded=("Loaded", lambda x: ", ".join(sorted({w for lst in x for w in lst}))),
+        Loaded=("Loaded", lambda x: ", ".join(sorted({w for lst in x for w, _ in lst}))),
     ).reset_index()
 
     grouped["Avg Sentiment"] = grouped["Avg"].round(3)
@@ -289,8 +320,6 @@ def entity_framing(entities_df: pd.DataFrame) -> pd.DataFrame:
     return (grouped[cols]
             .sort_values(["Mentions", "Avg Sentiment"], ascending=[False, True])
             .reset_index(drop=True))
-
-
 def distinctive_words(lemmas_a: list, lemmas_b: list, top: int = 10,
                       label_a: str = "A", label_b: str = "B"):
     """Words one source uses much more than the other (per 1,000 words)."""
