@@ -5,30 +5,38 @@ Run with:  streamlit run app.py
 """
 
 from collections import Counter
+from html import escape
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from matplotlib.colors import LinearSegmentedColormap
 from wordcloud import WordCloud
 
-from bias import CATEGORY_COLORS, analyze_article, distinctive_words
+from bias import CATEGORY_COLORS, COMPONENTS, analyze_article, distinctive_words
 from lexical import metrics_table
 from samples import SAMPLES, STORY
+from style import (GREEN, GREY, HIGHLIGHTS, INK, OCHRE, RED, callout, card, footer, hero,
+                   inject_css, masthead, register_plotly_theme, section, stat_cards)
 
-st.set_page_config(page_title="News Bias & Framing Analyzer", page_icon="📰", layout="wide")
+st.set_page_config(page_title="News Bias & Framing Analyzer", page_icon="📰",
+                   layout="wide", initial_sidebar_state="collapsed")
+register_plotly_theme()
+CATEGORY_COLORS.update(HIGHLIGHTS)  # muted highlighter colours for flagged words
 
-LABEL_COLORS = {"Positive": "#16a34a", "Neutral": "#94a3b8", "Negative": "#dc2626"}
+LABEL_COLORS = {"Positive": GREEN, "Neutral": GREY, "Negative": RED}
+RISK_SCALE = [GREEN, OCHRE, RED]
 BIAS_STEPS = [
-    {"range": [0, 25], "color": "#bbf7d0"},
-    {"range": [25, 50], "color": "#fde68a"},
-    {"range": [50, 75], "color": "#fdba74"},
-    {"range": [75, 100], "color": "#fca5a5"},
+    {"range": [0, 25], "color": "#dbe5d0"},
+    {"range": [25, 50], "color": "#efe3b8"},
+    {"range": [50, 75], "color": "#ebcfa6"},
+    {"range": [75, 100], "color": "#e3b3a8"},
 ]
 SENT_STEPS = [
-    {"range": [-1, -0.05], "color": "#fecaca"},
-    {"range": [-0.05, 0.05], "color": "#e2e8f0"},
-    {"range": [0.05, 1], "color": "#bbf7d0"},
+    {"range": [-1, -0.05], "color": "#e3b3a8"},
+    {"range": [-0.05, 0.05], "color": "#e4ddcc"},
+    {"range": [0.05, 1], "color": "#dbe5d0"},
 ]
 CLOUD_SKIP = {"say", "also", "would", "could", "one", "like", "get", "make", "new",
               "may", "take", "go", "come", "see", "tell", "year", "said"}
@@ -36,7 +44,7 @@ CLOUD_SKIP = {"say", "also", "would", "could", "one", "like", "get", "make", "ne
 
 # ================================================================ helpers
 def show(fig, key):
-    st.plotly_chart(fig, use_container_width=True, key=key)
+    st.plotly_chart(fig, use_container_width=True, key=key, theme=None)
 
 
 def csv_bytes(df: pd.DataFrame) -> bytes:
@@ -47,9 +55,10 @@ def gauge(value, title, lo, hi, steps, fmt=".1f"):
     fig = go.Figure(go.Indicator(
         mode="gauge+number",
         value=value,
-        number={"valueformat": fmt},
+        number={"valueformat": fmt, "font": {"family": "Playfair Display, Georgia, serif", "size": 44}},
         title={"text": title},
-        gauge={"axis": {"range": [lo, hi]}, "bar": {"color": "#1e293b"}, "steps": steps},
+        gauge={"axis": {"range": [lo, hi]}, "bar": {"color": INK}, "steps": steps,
+               "borderwidth": 1, "bordercolor": INK},
     ))
     fig.update_layout(height=280, margin=dict(l=30, r=30, t=60, b=10))
     return fig
@@ -73,23 +82,26 @@ def make_wordcloud(lemmas: list):
     freq = Counter(w for w in lemmas if len(w) > 2 and w not in CLOUD_SKIP)
     if not freq:
         return None
-    wc = WordCloud(width=900, height=420, background_color="white",
-                   colormap="viridis", max_words=60, random_state=1)
+    cmap = LinearSegmentedColormap.from_list("newsprint", [INK, "#5a5446", RED])
+    wc = WordCloud(width=900, height=420, background_color="#faf6ec",
+                   colormap=cmap, max_words=60, random_state=1)
     return wc.generate_from_frequencies(dict(freq)).to_array()
 
 
 def legend_html() -> str:
     return "".join(
-        f'<span style="background:{color};color:#111;padding:2px 8px;border-radius:4px;'
-        f'margin-right:6px;font-size:0.85rem">{cat}</span>'
+        f"<span style=\"background:{color};color:#1a1a1a;padding:2px 8px;margin-right:6px;"
+        f"font-family:'IBM Plex Mono',monospace;font-size:.7rem;letter-spacing:.06em;"
+        f"text-transform:uppercase\">{cat}</span>"
         for cat, color in CATEGORY_COLORS.items()
     )
 
 
 def highlight_box(html: str) -> str:
     html = html.replace("$", "&#36;")  # stop Streamlit treating $ as maths
-    return (f'<div style="background:#ffffff;color:#111;padding:16px;border-radius:8px;'
-            f'line-height:1.9">{html}</div>')
+    return (f"<div style=\"background:#faf6ec;color:#1a1a1a;padding:1.2rem 1.4rem;"
+            f"border:1px solid #1a1a1a;font-family:'Source Serif 4',Georgia,serif;"
+            f"font-size:1.02rem;line-height:1.95\">{html}</div>")
 
 
 def subjectivity_word(value: float) -> str:
@@ -138,7 +150,7 @@ def render_single(res: dict):
 
     # ---------------------------------------------------------- overview
     with tabs[0]:
-        st.subheader(res["name"])
+        st.markdown(f"#### {res['name']}")
         c1, c2 = st.columns(2)
         with c1:
             show(gauge(b["score"], "Bias score (0-100)", 0, 100, BIAS_STEPS), f"bias_gauge_{k}")
@@ -152,17 +164,19 @@ def render_single(res: dict):
         m[0].metric("Words", lex["total_words"])
         m[1].metric("Sentences", len(pre["sentences"]))
         m[2].metric("Subjectivity", f"{o['textblob_subjectivity']:.2f}")
-        m[3].metric("Lexical diversity (MTLD)", f"{lex['mtld']:.1f}")
+        m[3].metric("Diversity (MTLD)", f"{lex['mtld']:.1f}")
         m[4].metric("Reading ease", f"{lex['flesch_reading_ease']:.0f}")
 
         loaded = counts.get("Negative loaded", 0) + counts.get("Positive loaded", 0)
-        st.info(
-            f"**{res['name']}** scores **{b['score']} / 100** ({b['label'].lower()} bias indicators). "
-            f"Overall sentiment is **{o['label'].lower()}** (VADER {o['vader_compound']:.2f}) and the "
-            f"writing is {subjectivity_word(o['textblob_subjectivity'])} "
-            f"(subjectivity {o['textblob_subjectivity']:.2f}). It uses **{loaded}** loaded words and "
-            f"**{len(res['vague_phrases'])}** vague attributions such as 'critics say'."
-        )
+        st.markdown(callout(
+            "The verdict",
+            f"<b>{escape(res['name'])}</b> scores <b>{b['score']} / 100</b> "
+            f"({b['label'].lower()} bias indicators). Overall sentiment is <b>{o['label'].lower()}</b> "
+            f"(VADER {o['vader_compound']:.2f}) and the writing is "
+            f"{subjectivity_word(o['textblob_subjectivity'])} "
+            f"(subjectivity {o['textblob_subjectivity']:.2f}). It uses <b>{loaded}</b> loaded words and "
+            f"<b>{len(res['vague_phrases'])}</b> vague attributions such as 'critics say'."
+        ), unsafe_allow_html=True)
         st.caption("The bias score is a heuristic indicator of emotive, one-sided writing style. "
                    "It does not measure whether the facts are true or the article's political leaning.")
 
@@ -179,9 +193,9 @@ def render_single(res: dict):
         ))
         fig.add_trace(go.Scatter(
             x=df["No."], y=df["TextBlob Polarity"], name="TextBlob polarity",
-            mode="lines+markers", line=dict(color="#2563eb"),
+            mode="lines+markers", line=dict(color=INK, dash="dot"),
         ))
-        fig.add_hline(y=0, line_color="#64748b", line_width=1)
+        fig.add_hline(y=0, line_color=INK, line_width=1)
         fig.update_layout(height=380, xaxis_title="Sentence number",
                           yaxis=dict(range=[-1.05, 1.05], title="Sentiment score"),
                           legend=dict(orientation="h", y=1.12), margin=dict(t=40))
@@ -243,8 +257,7 @@ def render_single(res: dict):
         with c1:
             show(gauge(b["score"], "Bias score", 0, 100, BIAS_STEPS), f"bias_gauge2_{k}")
         with c2:
-            bd = b["breakdown"]
-            bar = px.bar(bd, x="Points", y="Component", orientation="h", text="Points")
+            bar = px.bar(b["breakdown"], x="Points", y="Component", orientation="h", text="Points")
             bar.update_layout(height=280, margin=dict(t=20, b=10))
             show(bar, f"breakdown_{k}")
         st.dataframe(b["breakdown"], hide_index=True, use_container_width=True)
@@ -263,6 +276,7 @@ def render_single(res: dict):
             cc = ind.groupby("Category", as_index=False)["Count"].sum()
             cbar = px.bar(cc, x="Category", y="Count", color="Category",
                           color_discrete_map=CATEGORY_COLORS)
+            cbar.update_traces(marker_line_color=INK, marker_line_width=1)
             cbar.update_layout(height=300, showlegend=False)
             show(cbar, f"cats_{k}")
             st.dataframe(ind, hide_index=True, use_container_width=True)
@@ -312,11 +326,10 @@ def render_single(res: dict):
             st.info("No people, organisations or places were detected in this article.")
         else:
             ebar = px.bar(ef.sort_values("Avg Sentiment"), x="Avg Sentiment", y="Entity",
-                          orientation="h", color="Avg Sentiment",
-                          color_continuous_scale="RdYlGn", range_color=[-1, 1],
+                          orientation="h", color="Portrayal", color_discrete_map=LABEL_COLORS,
                           hover_data=["Type", "Mentions"])
             ebar.update_layout(height=max(300, 55 * len(ef)), xaxis=dict(range=[-1.05, 1.05]),
-                               coloraxis_showscale=False)
+                               legend_title_text="")
             show(ebar, f"ent_{k}")
             st.dataframe(ef, hide_index=True, use_container_width=True)
             st.caption("Each entity is scored on the clause where it appears: VADER score + 0.25 x "
@@ -330,7 +343,7 @@ def render_single(res: dict):
         p = st.columns(4)
         p[0].metric("Sentences", len(pre["sentences"]))
         p[1].metric("Tokens", len(pre["tokens"]))
-        p[2].metric("After stopword removal", len(pre["tokens_no_stop"]))
+        p[2].metric("After stopwords", len(pre["tokens_no_stop"]))
         p[3].metric("Unique lemmas", len(set(pre["lemmas"])))
         st.markdown("**1. Cleaned text**")
         with st.expander("Show cleaned text"):
@@ -366,11 +379,13 @@ def render_compare(results: list):
     summary = pd.DataFrame([summary_row(r) for r in results])
     top = summary.loc[summary["Bias score"].idxmax()]
     low = summary.loc[summary["Bias score"].idxmin()]
-    st.info(
-        f"**Highest bias score:** {top['Article']} ({top['Bias score']}, {top['Framing tone'].lower()}).  "
-        f"**Lowest:** {low['Article']} ({low['Bias score']}).  "
-        f"Gap: **{top['Bias score'] - low['Bias score']:.1f} points** on the same story."
-    )
+    st.markdown(callout(
+        "The spread",
+        f"<b>Highest bias score:</b> {escape(str(top['Article']))} ({top['Bias score']}, "
+        f"{top['Framing tone'].lower()}). <b>Lowest:</b> {escape(str(low['Article']))} "
+        f"({low['Bias score']}). The gap is <b>{top['Bias score'] - low['Bias score']:.1f} points</b> "
+        f"on the same story."
+    ), unsafe_allow_html=True)
 
     tabs = st.tabs(["Summary", "Sentiment", "Bias breakdown", "Entity framing",
                     "Word choice", "Highlighted text", "Export"])
@@ -378,7 +393,7 @@ def render_compare(results: list):
     # ----------------------------------------------------------- summary
     with tabs[0]:
         fig = px.bar(summary, x="Article", y="Bias score", color="Bias score", text="Bias score",
-                     color_continuous_scale=["#22c55e", "#eab308", "#ef4444"], range_color=[0, 100])
+                     color_continuous_scale=RISK_SCALE, range_color=[0, 100])
         fig.update_layout(height=380, yaxis=dict(range=[0, 100]), coloraxis_showscale=False,
                           title="Bias score by source")
         show(fig, "cmp_bias")
@@ -396,7 +411,7 @@ def render_compare(results: list):
         tl = pd.concat([r["sentences_df"][["No.", "VADER"]].assign(Article=r["name"])
                         for r in results])
         lfig = px.line(tl, x="No.", y="VADER", color="Article", markers=True)
-        lfig.add_hline(y=0, line_color="#64748b", line_width=1)
+        lfig.add_hline(y=0, line_color=INK, line_width=1)
         lfig.update_layout(height=400, xaxis_title="Sentence number",
                            yaxis=dict(range=[-1.05, 1.05], title="VADER score"),
                            title="How sentiment moves through each article")
@@ -488,12 +503,14 @@ def render_compare(results: list):
             with c2:
                 st.markdown(f"**Words {b['name']} leans on**")
                 st.dataframe(only_b, hide_index=True, use_container_width=True)
-            both = pd.concat([only_a, only_b]).drop_duplicates("Word")
+            both = pd.concat([only_a, only_b]).drop_duplicates("Word").copy()
             if not both.empty:
+                both["Leans toward"] = both["Difference"].apply(
+                    lambda d: a["name"] if d > 0 else b["name"])
                 wfig = px.bar(both.sort_values("Difference"), x="Difference", y="Word",
-                              orientation="h", color="Difference",
-                              color_continuous_scale="RdBu", range_color=[-50, 50])
-                wfig.update_layout(height=520, coloraxis_showscale=False,
+                              orientation="h", color="Leans toward",
+                              color_discrete_sequence=[INK, RED])
+                wfig.update_layout(height=520, legend_title_text="",
                                    title=f"Positive = more in {a['name']}, negative = more in {b['name']}",
                                    xaxis_title="Difference (uses per 1,000 words)")
                 show(wfig, "cmp_words")
@@ -516,7 +533,7 @@ def render_compare(results: list):
 
 # =================================================================== inputs
 def input_slot(idx: int) -> dict:
-    st.markdown(f"**Article {idx + 1}**")
+    st.markdown(f'<div class="slot-label">Article {idx + 1}</div>', unsafe_allow_html=True)
     source = st.radio("Source", ["Sample", "Paste text", "URL"], key=f"src{idx}",
                       horizontal=True, label_visibility="collapsed")
     if source == "Sample":
@@ -541,38 +558,15 @@ def uniquify(names: list) -> list:
     return out
 
 
-# ===================================================================== main
-def main():
-    st.title("News Bias & Framing Analyzer")
-    st.caption("Sentiment, lexical diversity, framing and bias indicators for news articles "
-               "(Web & Social Media Analytics)")
-
-    with st.sidebar:
-        st.header("Settings")
-        mode = st.radio("Mode", ["Single article", "Compare articles"])
-        n = 1
-        if mode == "Compare articles":
-            n = st.slider("Number of articles", 2, 3, 3)
-        st.divider()
-        st.markdown("### Techniques used")
-        st.markdown(
-            "- Cleaning, sentence and word tokenization\n"
-            "- Stopword removal\n"
-            "- Stemming (Porter) vs lemmatization (WordNet)\n"
-            "- POS tagging and named entity recognition\n"
-            "- Sentiment: VADER + TextBlob\n"
-            "- Lexical diversity: TTR, MTLD, hapax, Yule's K\n"
-            "- Loaded-word, hedge and certainty lexicons\n"
-            "- N-grams and entity-level framing"
-        )
-        with st.expander("How the bias score works"):
-            st.markdown(
-                "Score out of 100 from five visible parts:\n\n"
-                "1. Loaded language (30)\n2. Subjectivity (25)\n3. Emotional intensity (15)\n"
-                "4. Certainty and intensifiers (15)\n5. Vague attribution and stance verbs (15)\n\n"
-                "Bands: under 25 low, 25-50 moderate, 50-75 high, 75+ very high."
-            )
-        st.caption("A heuristic for emotive writing style, not a fact-check or a political label.")
+# ================================================================== views
+def analyzer_view():
+    st.markdown(section("Step 1", "Choose your source material"), unsafe_allow_html=True)
+    mode = st.radio("Mode", ["Single article", "Compare articles"], horizontal=True,
+                    label_visibility="collapsed")
+    n = 1
+    if mode == "Compare articles":
+        n = st.radio("Number of articles", [2, 3], index=1, horizontal=True,
+                     format_func=lambda x: f"Compare {x} articles")
 
     slots = []
     cols = st.columns(n)
@@ -614,13 +608,63 @@ def main():
 
     results = st.session_state.get("results")
     if results and st.session_state.get("results_key") == state_key:
-        st.divider()
+        st.markdown(section("Step 2", "The findings"), unsafe_allow_html=True)
         if len(results) == 1:
             render_single(results[0])
         else:
             render_compare(results)
     else:
-        st.info("Choose your article(s) above and click **Analyze**.")
+        st.markdown(callout("Ready when you are",
+                            "Choose your article(s) above and press <b>Analyze</b>."),
+                    unsafe_allow_html=True)
+
+
+def method_view():
+    st.markdown(section("The method", "From raw text to a scored verdict"), unsafe_allow_html=True)
+    steps = [
+        ("01", "Clean & tokenize", "Strip URLs and HTML, split into sentences and words, remove stopwords."),
+        ("02", "Normalize", "Porter stemming and WordNet lemmatization, shown side by side."),
+        ("03", "Measure", "VADER and TextBlob sentiment, plus lexical diversity (TTR, MTLD, hapax, Yule's K)."),
+        ("04", "Frame", "Loaded-word lexicons, vague attribution, n-grams and clause-level entity portrayal."),
+    ]
+    for col, (num, title, body) in zip(st.columns(4), steps):
+        with col:
+            st.markdown(card(num, title, body), unsafe_allow_html=True)
+
+    st.markdown(section("The score", "How 0 to 100 is built"), unsafe_allow_html=True)
+    rows = [{"Component": n, "What is measured": m, "Floor": f, "Cap": c, "Weight": w}
+            for n, m, f, c, w in COMPONENTS]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("Each raw value is scaled linearly between its floor (0 points) and cap (full weight). "
+               "Bands: under 25 low, 25-50 moderate, 50-75 high, 75+ very high.")
+
+    st.markdown(callout(
+        "Know the limits",
+        "The score flags emotive, one-sided <i>writing style</i>. It cannot tell you whether a claim is "
+        "true, and it is not a measure of political leaning. The loaded-word lists are hand-built and "
+        "English-only, entity scores rely on a small spaCy model and clause-level sentiment, and "
+        "diversity metrics such as MTLD need roughly 50+ words to be reliable."
+    ), unsafe_allow_html=True)
+
+
+# ===================================================================== main
+def main():
+    inject_css()
+    st.markdown(masthead(), unsafe_allow_html=True)
+    st.markdown(hero(), unsafe_allow_html=True)
+    st.markdown(stat_cards([
+        ("Techniques", "9", "NLP methods, from tokenization to named-entity framing"),
+        ("Score", "0-100", "bias score built from five visible components"),
+        ("Compare", "3", "outlets side by side on a single story"),
+    ]), unsafe_allow_html=True)
+
+    tab_app, tab_method = st.tabs(["The Analyzer", "Method & Limits"])
+    with tab_app:
+        analyzer_view()
+    with tab_method:
+        method_view()
+
+    st.markdown(footer(), unsafe_allow_html=True)
 
 
 main()
