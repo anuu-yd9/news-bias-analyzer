@@ -13,6 +13,25 @@ from nltk.corpus import stopwords, wordnet
 from nltk.stem import PorterStemmer, WordNetLemmatizer
 from nltk.tokenize import sent_tokenize, word_tokenize
 
+def _ensure_nltk_data():
+    """Download NLTK data on first run (needed on a fresh server)."""
+    needed = {
+        "punkt": "tokenizers/punkt",
+        "punkt_tab": "tokenizers/punkt_tab",
+        "stopwords": "corpora/stopwords",
+        "wordnet": "corpora/wordnet",
+        "omw-1.4": "corpora/omw-1.4",
+        "averaged_perceptron_tagger": "taggers/averaged_perceptron_tagger",
+        "averaged_perceptron_tagger_eng": "taggers/averaged_perceptron_tagger_eng",
+    }
+    for package, path in needed.items():
+        try:
+            nltk.data.find(path)
+        except LookupError:
+            nltk.download(package, quiet=True)
+
+
+_ensure_nltk_data()
 _STEMMER = PorterStemmer()
 _LEMMATIZER = WordNetLemmatizer()
 _STOPWORDS = set(stopwords.words("english"))
@@ -25,7 +44,12 @@ def get_nlp():
     """Load the spaCy model once and reuse it."""
     global _NLP
     if _NLP is None:
-        _NLP = spacy.load("en_core_web_sm")
+        try:
+            _NLP = spacy.load("en_core_web_sm")
+        except OSError:
+            from spacy.cli import download
+            download("en_core_web_sm")
+            _NLP = spacy.load("en_core_web_sm")
     return _NLP
 
 
